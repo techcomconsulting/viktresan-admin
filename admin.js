@@ -176,7 +176,14 @@ async function overviewPage(main) {
 }
 
 // ---------- Reklamlänkar ----------
-const TIP_CATS = [['mata', 'Mäta'], ['trana', 'Träna'], ['ata', 'Äta och dricka']];
+// Kategorier sparas i tips/_cats. Standard om inget är sparat.
+const DEFAULT_CATS = [{ id: 'mata', name: 'Mäta', emoji: '📏' }, { id: 'trana', name: 'Träna', emoji: '🏃' }, { id: 'ata', name: 'Äta och dricka', emoji: '🥗' }];
+async function loadCats() {
+  const s = await getDoc(doc(db, 'tips', '_cats')).catch(() => null);
+  const c = s?.exists() ? s.data().cats : null;
+  return Array.isArray(c) && c.length ? c : DEFAULT_CATS.map((x) => ({ ...x }));
+}
+const saveCats = (cats) => setDoc(doc(db, 'tips', '_cats'), { cats, updated: serverTimestamp() });
 const DEFAULT_TIPS = [
   { id: 'vag', cat: 'mata', title: 'Personvåg', why: 'Väg dig samma tid varje vecka, gärna på morgonen. En enkel digital våg räcker gott.' },
   { id: 'kroppsvag', cat: 'mata', title: 'Våg som mäter fett och muskler', why: 'Bra om du vill se mer än bara kilon. Siffrorna är ungefärliga, men visar hur det går över tid.' },
@@ -192,7 +199,8 @@ const DEFAULT_TIPS = [
 const validUrl = (u) => /^https:\/\/[^\s"'<>]+$/i.test(String(u || '').trim());
 
 async function loadTips() {
-  const s = await getDocs(collection(db, 'tips')).catch(() => ({ docs: [] }));
+  const s0 = await getDocs(collection(db, 'tips')).catch(() => ({ docs: [] }));
+  const s = { docs: s0.docs.filter((d) => !d.id.startsWith('_')) };
   const saved = Object.fromEntries(s.docs.map((d) => [d.id, d.data()]));
   const merged = DEFAULT_TIPS.map((t) => ({ store: '', url: '', visible: true, ...t, ...(saved[t.id] || {}), id: t.id }));
   const extra = s.docs.filter((d) => !DEFAULT_TIPS.some((t) => t.id === d.id)).map((d) => ({ visible: true, ...d.data(), id: d.id }))
@@ -201,9 +209,10 @@ async function loadTips() {
 }
 
 async function linksPage(main) {
-  const [tips, clicksS] = await Promise.all([loadTips(), getDocs(collection(db, 'tipClicks')).catch(() => null)]);
+  const [tips, clicksS, cats] = await Promise.all([loadTips(), getDocs(collection(db, 'tipClicks')).catch(() => null), loadCats()]);
   const clicks = Object.fromEntries(clicksS ? clicksS.docs.map((d) => [d.id, d.data().count || 0]) : []);
-  const cat = (k) => (TIP_CATS.find((c) => c[0] === k) || [, 'Övrigt'])[1];
+  const cat = (k) => { const c = cats.find((x) => x.id === k); return c ? `${c.emoji || ''} ${c.name}` : 'Övrigt'; };
+  const countIn = (k) => tips.filter((t) => t.cat === k).length;
   main.innerHTML = `
     <div class="between"><div><h1>Reklamlänkar</h1><span class="muted">Visas under Tips och prylar i appen, märkta "Reklamlänk".</span></div>
       <button class="btn primary" data-new>+ Ny länk</button></div>
@@ -213,13 +222,58 @@ async function linksPage(main) {
         <td class="hide-m">${esc(cat(t.cat))}</td><td class="hide-m">${esc(t.store || '–')}</td><td class="r num">${clicks[t.id] || 0}</td>
         <td>${!t.url ? '<span class="chip off">Länk saknas</span>' : t.visible === false ? '<span class="chip off">Dold</span>' : '<span class="chip good">Visas</span>'}</td></tr>`).join('')}</tbody>
     </table></div>
-    <p class="small muted">Klistra in länken från Adtraction, Awin eller Partner-ads. Den måste börja med https://. Inga bantningspiller eller produkter som lovar snabb viktnedgång.</p>`;
+    <p class="small muted">Klistra in länken från Adtraction, Awin eller Partner-ads. Den måste börja med https://. Tips utan länk visas inte för användarna. Inga bantningspiller eller produkter som lovar snabb viktnedgång.</p>
+    <div class="card stack">
+      <div class="between"><div><h2>Kategorier</h2><span class="small muted">Rubrikerna på sidan Tips och prylar. Visas i den här ordningen.</span></div>
+        <button class="btn outline sm" data-newcat>+ Ny kategori</button></div>
+      <table>${cats.map((c, i) => `<tr><td style="width:44px;font-size:22px">${esc(c.emoji || '')}</td><td><b>${esc(c.name)}</b><div class="small muted">${countIn(c.id)} länkar</div></td>
+        <td class="r"><button class="btn sm" data-up="${i}" ${i ? '' : 'disabled'} aria-label="Flytta upp">↑</button>
+          <button class="btn sm" data-down="${i}" ${i < cats.length - 1 ? '' : 'disabled'} aria-label="Flytta ner">↓</button>
+          <button class="btn outline sm" data-cat="${i}">Ändra</button></td></tr>`).join('')}</table>
+    </div>`;
+  const editCat = (i) => {
+    const c = i == null ? { id: 'c' + Date.now().toString(36), name: '', emoji: '⭐' } : cats[i];
+    const m = modal(`
+      <h2>${i == null ? 'Ny kategori' : 'Ändra kategori'}</h2>
+      <div class="field"><label>Namn</label><input class="input" id="cn" maxlength="30" value="${esc(c.name)}" placeholder="t.ex. Sömn och återhämtning"></div>
+      <div class="field"><label>Emoji</label><input class="input" id="ce" maxlength="4" value="${esc(c.emoji || '')}" style="max-width:120px;font-size:22px"></div>
+      <p class="small muted">Tips: på Mac tryck Ctrl+Cmd+Mellanslag, på Windows tryck Windows-tangenten + punkt, för att välja emoji.</p>
+      <p class="error hidden"></p>
+      <div class="row" style="justify-content:space-between">${i != null ? '<button class="btn danger" data-del>Ta bort</button>' : '<span></span>'}
+        <div class="row"><button class="btn" data-close>Avbryt</button><button class="btn primary" data-save>Spara</button></div></div>`);
+    const err = m.el.querySelector('.error');
+    m.el.querySelector('[data-save]').onclick = async (e) => {
+      const name = m.el.querySelector('#cn').value.trim();
+      if (!name) { err.textContent = 'Skriv ett namn.'; err.classList.remove('hidden'); return; }
+      const next = cats.map((x) => ({ ...x }));
+      const item = { id: c.id, name, emoji: m.el.querySelector('#ce').value.trim() };
+      if (i == null) next.push(item); else next[i] = item;
+      await busy(e.currentTarget, async () => {
+        try { await saveCats(next); m.close(); toast('Sparat.'); linksPage(main); } catch (ex) { err.textContent = errText(ex); err.classList.remove('hidden'); }
+      });
+    };
+    m.el.querySelector('[data-del]')?.addEventListener('click', async () => {
+      if (cats.length <= 1) { toast('Det måste finnas minst en kategori.'); return; }
+      const n = countIn(c.id);
+      if (!(await confirmBox('Ta bort kategorin?', n ? `${n} länkar hamnar under "Övrigt" tills du flyttar dem.` : ''))) return;
+      try { await saveCats(cats.filter((_, j) => j !== i)); m.close(); toast('Borttagen.'); linksPage(main); } catch (ex) { toast(errText(ex)); }
+    });
+  };
+  const move = async (i, d) => {
+    const next = cats.map((x) => ({ ...x }));
+    [next[i], next[i + d]] = [next[i + d], next[i]];
+    try { await saveCats(next); linksPage(main); } catch (ex) { toast(errText(ex)); }
+  };
+  main.querySelector('[data-newcat]').onclick = () => editCat(null);
+  main.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => editCat(Number(b.dataset.cat))));
+  main.querySelectorAll('[data-up]').forEach((b) => (b.onclick = () => move(Number(b.dataset.up), -1)));
+  main.querySelectorAll('[data-down]').forEach((b) => (b.onclick = () => move(Number(b.dataset.down), 1)));
   const edit = (t) => {
-    const x = t || { cat: 'mata', title: '', why: '', store: '', url: '', visible: true };
+    const x = t || { cat: cats[0]?.id || 'mata', title: '', why: '', store: '', url: '', visible: true };
     const m = modal(`
       <h2>${t ? 'Ändra reklamlänk' : 'Ny reklamlänk'}</h2>
       <div class="field"><label>Rubrik</label><input class="input" id="tt" maxlength="60" value="${esc(x.title)}"></div>
-      <div class="field"><label>Kategori</label><select class="input" id="tc">${TIP_CATS.map(([k, l]) => `<option value="${k}" ${k === x.cat ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="field"><label>Kategori</label><select class="input" id="tc">${cats.map((c) => `<option value="${esc(c.id)}" ${c.id === x.cat ? 'selected' : ''}>${esc((c.emoji || '') + ' ' + c.name)}</option>`).join('')}${cats.some((c) => c.id === x.cat) ? '' : '<option value="" selected>Övrigt (välj en kategori)</option>'}</select></div>
       <div class="field"><label>Varför är den bra?</label><textarea class="input" id="tw" maxlength="200">${esc(x.why)}</textarea></div>
       <div class="field"><label>Butik (valfritt)</label><input class="input" id="ts" maxlength="40" value="${esc(x.store)}"></div>
       <div class="field"><label>Länk</label><input class="input" id="tu" value="${esc(x.url)}" placeholder="https://..."></div>
