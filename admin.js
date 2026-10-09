@@ -132,14 +132,22 @@ function barChart(weeks) {
 async function safeCount(q) { try { return (await getCountFromServer(q)).data().count; } catch { return null; } }
 
 async function overviewPage(main) {
-  const [statsS, membersS, clicksS, foods, posts, anns] = await Promise.all([
+  const [statsS, membersS, clicksS, foods, posts, anns, cfgS, aiS] = await Promise.all([
     getDoc(doc(db, 'stats', 'users')).catch(() => null),
     getDocs(collection(db, 'stats', 'users', 'members')).catch(() => null),
     getDocs(collection(db, 'tipClicks')).catch(() => null),
     safeCount(collection(db, 'foods')),
     safeCount(query(collection(db, 'posts'), where('public', '==', true))),
-    getDocs(collection(db, 'announcements')).catch(() => null)
+    getDocs(collection(db, 'announcements')).catch(() => null),
+    getDoc(doc(db, 'config', 'app')).catch(() => null),
+    getDocs(collection(db, 'aiStats')).catch(() => null)
   ]);
+  const cfg = cfgS?.exists() ? cfgS.data() : {};
+  const aiDays = aiS ? aiS.docs.map((d) => [d.id, d.data().n || 0]) : [];
+  const dayKey = (d) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm' }).format(d);
+  const aiToday = (aiDays.find(([d]) => d === dayKey(new Date())) || [0, 0])[1];
+  const ai7 = aiDays.filter(([d]) => d >= dayKey(new Date(Date.now() - 6 * 864e5))).reduce((a, b) => a + b[1], 0);
+  const ai30 = aiDays.filter(([d]) => d >= dayKey(new Date(Date.now() - 29 * 864e5))).reduce((a, b) => a + b[1], 0);
   const total = statsS?.exists() ? statsS.data().count : 0;
   const members = membersS ? membersS.docs.map((d) => toD(d.data().at)).filter(Boolean) : [];
   const now = Date.now();
@@ -172,7 +180,23 @@ async function overviewPage(main) {
           <tr><td>Aktiva nyheter</td><td class="r num"><b>${activeAnn}</b></td></tr>
         </table></div>
     </div>
+    <div class="card stack"><div class="between"><h2>📷 Fota maten (AI)</h2>
+        <span class="chip ${cfg.aiPhoto ? 'good' : 'off'}">${cfg.aiPhoto ? 'PÅ' : 'AV'}</span></div>
+      <p class="muted small" style="margin:0">Användarna kan fota maten och få kalorier uppskattade. Varje foto kostar några öre. Max 15 foton per person och dag, 1000 totalt per dag.</p>
+      <table>
+        <tr><td>Foton idag</td><td class="r num"><b>${aiToday}</b></td></tr>
+        <tr><td>Senaste 7 dagarna</td><td class="r num"><b>${ai7}</b></td></tr>
+        <tr><td>Senaste 30 dagarna</td><td class="r num"><b>${ai30}</b></td></tr>
+      </table>
+      <button class="btn ${cfg.aiPhoto ? '' : 'primary'} sm" data-ai style="align-self:flex-start">${cfg.aiPhoto ? 'Stäng av' : 'Slå på'}</button></div>
     <p class="small muted">Bara antal. Adminsidan visar aldrig vilka som har konto eller deras hälsouppgifter.</p>`;
+  main.querySelector('[data-ai]').onclick = (e) => busy(e.currentTarget, async () => {
+    try {
+      await setDoc(doc(db, 'config', 'app'), { aiPhoto: !cfg.aiPhoto, updatedAt: serverTimestamp() }, { merge: true });
+      toast(cfg.aiPhoto ? 'Fotoanalys är avstängd.' : 'Fotoanalys är påslagen.');
+      overviewPage(main);
+    } catch (ex) { toast(errText(ex)); }
+  });
 }
 
 // ---------- Reklamlänkar ----------
