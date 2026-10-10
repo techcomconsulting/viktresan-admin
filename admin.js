@@ -129,6 +129,16 @@ function barChart(weeks) {
   </svg>`;
 }
 
+// Fotoservern hos Cloudflare (samma adress som i appen, js/ai.js).
+const AI_URL = '';
+async function aiStats() {
+  if (!AI_URL) return null;
+  try {
+    const r = await fetch(AI_URL.replace(/\/$/, '') + '/stats', { headers: { Authorization: 'Bearer ' + (await auth.currentUser.getIdToken()) } });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+}
+
 async function safeCount(q) { try { return (await getCountFromServer(q)).data().count; } catch { return null; } }
 
 async function overviewPage(main) {
@@ -140,14 +150,11 @@ async function overviewPage(main) {
     safeCount(query(collection(db, 'posts'), where('public', '==', true))),
     getDocs(collection(db, 'announcements')).catch(() => null),
     getDoc(doc(db, 'config', 'app')).catch(() => null),
-    getDocs(collection(db, 'aiStats')).catch(() => null)
+    aiStats()
   ]);
   const cfg = cfgS?.exists() ? cfgS.data() : {};
-  const aiDays = aiS ? aiS.docs.map((d) => [d.id, d.data().n || 0]) : [];
-  const dayKey = (d) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm' }).format(d);
-  const aiToday = (aiDays.find(([d]) => d === dayKey(new Date())) || [0, 0])[1];
-  const ai7 = aiDays.filter(([d]) => d >= dayKey(new Date(Date.now() - 6 * 864e5))).reduce((a, b) => a + b[1], 0);
-  const ai30 = aiDays.filter(([d]) => d >= dayKey(new Date(Date.now() - 29 * 864e5))).reduce((a, b) => a + b[1], 0);
+  const ai = aiS || {};
+  const server = !AI_URL ? 'Inte igång än' : !aiS ? 'Svarar inte' : ai.keyOk ? 'Igång ✓' : 'AI-nyckel saknas';
   const total = statsS?.exists() ? statsS.data().count : 0;
   const members = membersS ? membersS.docs.map((d) => toD(d.data().at)).filter(Boolean) : [];
   const now = Date.now();
@@ -182,11 +189,12 @@ async function overviewPage(main) {
     </div>
     <div class="card stack"><div class="between"><h2>📷 Fota maten (AI)</h2>
         <span class="chip ${cfg.aiPhoto ? 'good' : 'off'}">${cfg.aiPhoto ? 'PÅ' : 'AV'}</span></div>
-      <p class="muted small" style="margin:0">Användarna kan fota maten och få kalorier uppskattade. Varje foto kostar några öre. Max 15 foton per person och dag, 1000 totalt per dag.</p>
+      <p class="muted small" style="margin:0">Användarna kan fota maten och få kalorier uppskattade. Varje foto kostar några öre. Max ${ai.perUser || 15} foton per person och dag, ${ai.perDay || 400} totalt per dag.</p>
       <table>
-        <tr><td>Foton idag</td><td class="r num"><b>${aiToday}</b></td></tr>
-        <tr><td>Senaste 7 dagarna</td><td class="r num"><b>${ai7}</b></td></tr>
-        <tr><td>Senaste 30 dagarna</td><td class="r num"><b>${ai30}</b></td></tr>
+        <tr><td>Servern (Cloudflare)</td><td class="r"><b>${server}</b></td></tr>
+        <tr><td>Foton idag</td><td class="r num"><b>${ai.today ?? '–'}</b></td></tr>
+        <tr><td>Senaste 7 dagarna</td><td class="r num"><b>${ai.d7 ?? '–'}</b></td></tr>
+        <tr><td>Senaste 30 dagarna</td><td class="r num"><b>${ai.d30 ?? '–'}</b></td></tr>
       </table>
       <button class="btn ${cfg.aiPhoto ? '' : 'primary'} sm" data-ai style="align-self:flex-start">${cfg.aiPhoto ? 'Stäng av' : 'Slå på'}</button></div>
     <p class="small muted">Bara antal. Adminsidan visar aldrig vilka som har konto eller deras hälsouppgifter.</p>`;
