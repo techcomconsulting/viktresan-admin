@@ -83,6 +83,7 @@ const PAGES = [
   ['lankar', '🔗', 'Reklamlänkar', linksPage],
   ['nyheter', '📣', 'Nyheter', newsPage],
   ['varor', '🥫', 'Varor', foodsPage],
+  ['tips', '💡', 'Tips från användare', feedbackPage],
   ['inlagg', '💬', 'Offentliga inlägg', postsPage]
 ];
 
@@ -142,7 +143,7 @@ async function aiStats() {
 async function safeCount(q) { try { return (await getCountFromServer(q)).data().count; } catch { return null; } }
 
 async function overviewPage(main) {
-  const [statsS, membersS, clicksS, foods, posts, anns, cfgS, aiS] = await Promise.all([
+  const [statsS, membersS, clicksS, foods, posts, anns, cfgS, aiS, fbNew] = await Promise.all([
     getDoc(doc(db, 'stats', 'users')).catch(() => null),
     getDocs(collection(db, 'stats', 'users', 'members')).catch(() => null),
     getDocs(collection(db, 'tipClicks')).catch(() => null),
@@ -150,7 +151,8 @@ async function overviewPage(main) {
     safeCount(query(collection(db, 'posts'), where('public', '==', true))),
     getDocs(collection(db, 'announcements')).catch(() => null),
     getDoc(doc(db, 'config', 'app')).catch(() => null),
-    aiStats()
+    aiStats(),
+    getDocs(collection(db, 'feedback')).then((x) => x.docs.filter((d) => d.data().status !== 'done').length).catch(() => null)
   ]);
   const cfg = cfgS?.exists() ? cfgS.data() : {};
   const ai = aiS || {};
@@ -185,6 +187,7 @@ async function overviewPage(main) {
           <tr><td>Varor som användare lagt till</td><td class="r num"><b>${foods ?? '–'}</b></td></tr>
           <tr><td>Offentliga inlägg</td><td class="r num"><b>${posts ?? '–'}</b></td></tr>
           <tr><td>Aktiva nyheter</td><td class="r num"><b>${activeAnn}</b></td></tr>
+          <tr><td><a href="#/tips">Nya tips från användare</a></td><td class="r num"><b>${fbNew ?? '–'}</b></td></tr>
         </table></div>
     </div>
     <div class="card stack"><div class="between"><h2>📷 Fota maten (AI)</h2>
@@ -453,5 +456,36 @@ async function postsPage(main) {
   main.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
     if (!(await confirmBox('Ta bort inlägget?', 'Det försvinner för alla. Använd bara för olämpligt innehåll.'))) return;
     try { await deleteDoc(doc(db, 'posts', b.dataset.del)); toast('Borttaget.'); postsPage(main); } catch (ex) { toast(errText(ex)); }
+  }));
+}
+
+// ---------- Tips från användare ----------
+const FB_KIND = { idea: '💡 Ny funktion', better: '✨ Förbättring', bug: '🐞 Fel' };
+let fbFilter = 'new';
+async function feedbackPage(main) {
+  const s = await getDocs(collection(db, 'feedback'));
+  const all = s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (toD(b.at) || 0) - (toD(a.at) || 0));
+  const list = fbFilter === 'new' ? all.filter((f) => f.status !== 'done') : all;
+  const nNew = all.filter((f) => f.status !== 'done').length;
+  main.innerHTML = `
+    <div class="between"><div><h1>Tips från användare</h1><span class="muted">Idéer och förbättringar som användarna skickat från appen (Profil → Tipsa oss).</span></div></div>
+    <div class="row" style="gap:8px">
+      <button class="btn ${fbFilter === 'new' ? 'primary' : ''} sm" data-f="new">Nya (${nNew})</button>
+      <button class="btn ${fbFilter === 'all' ? 'primary' : ''} sm" data-f="all">Alla (${all.length})</button>
+    </div>
+    ${list.length ? list.map((f) => `<div class="card stack" style="${f.status === 'done' ? 'opacity:.6' : ''}">
+      <div class="between"><span class="chip ${f.kind === 'bug' ? 'warn' : 'good'}">${FB_KIND[f.kind] || 'Tips'}</span><span class="small muted">${esc(f.name || 'Okänd')} · ${dShort(toD(f.at))}</span></div>
+      <p style="margin:0;white-space:pre-wrap;font-size:15px">${esc(f.text)}</p>
+      <div class="row" style="gap:8px;justify-content:flex-end">
+        ${f.status === 'done' ? '<span class="small muted">✓ Klar</span>' : `<button class="btn sm" data-done="${f.id}">Markera som klar</button>`}
+        <button class="btn danger sm" data-del="${f.id}">Ta bort</button></div>
+    </div>`).join('') : `<div class="card empty">${fbFilter === 'new' ? 'Inga nya tips just nu.' : 'Inga tips än.'}</div>`}`;
+  main.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { fbFilter = b.dataset.f; feedbackPage(main); }));
+  main.querySelectorAll('[data-done]').forEach((b) => (b.onclick = () => busy(b, async () => {
+    try { await setDoc(doc(db, 'feedback', b.dataset.done), { status: 'done' }, { merge: true }); feedbackPage(main); } catch (ex) { toast(errText(ex)); }
+  })));
+  main.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
+    if (!(await confirmBox('Ta bort tipset?', ''))) return;
+    try { await deleteDoc(doc(db, 'feedback', b.dataset.del)); toast('Borttaget.'); feedbackPage(main); } catch (ex) { toast(errText(ex)); }
   }));
 }
